@@ -360,6 +360,7 @@ def recommend_apartments(payload: dict):
             
             recommendations.append({
                 "region": f"{r['SD']} {r['SGG']} {r['EMD']}",
+                "emd": r['EMD'],
                 "price_per_pyeong_krw": int(r['MEME_PRICE_PER_SUPPLY_PYEONG'] * 10000), 
                 "affordable_size_pyeong": round(budget_max / (r['MEME_PRICE_PER_SUPPLY_PYEONG'] * 10000), 1),
                 "total_households": r['TOTAL_HOUSEHOLDS'],
