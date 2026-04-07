@@ -1,0 +1,23 @@
+INFO:     Will watch for changes in these directories: ['/Users/choihyeonjin/Desktop/snowflake-hackathon/backend']
+INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+INFO:     Started reloader process [52205] using StatReload
+INFO:     Started server process [52267]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+Snowflake session initialized on startup.
+INFO:     127.0.0.1:60329 - "OPTIONS /api/analyze-prompt HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60331 - "POST /api/analyze-prompt HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60331 - "POST /api/recommend-apartments HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60362 - "OPTIONS /api/ask-dong HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60362 - "POST /api/ask-dong HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60364 - "POST /api/ask-dong HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60413 - "POST /api/ask-dong HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60424 - "POST /api/ask-dong HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60460 - "POST /api/analyze-prompt HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60460 - "OPTIONS /api/recommend-apartments HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60460 - "POST /api/recommend-apartments HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61291 - "OPTIONS /api/analyze-prompt HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61291 - "POST /api/analyze-prompt HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61291 - "OPTIONS /api/recommend-apartments HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61293 - "POST /api/recommend-apartments HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61317 - "OPTIONS /api/ask-dong HTTP/1.1" 200 OK

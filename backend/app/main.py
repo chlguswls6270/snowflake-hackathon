@@ -30,6 +30,10 @@ def startup_event():
 class PromptPayload(BaseModel):
     prompt: str
 
+class DongPromptPayload(BaseModel):
+    dong_name: str
+    question: str
+
 @app.get("/")
 def read_root():
     return {"message": "Welcome to SmartHome Matchmaker API"}
@@ -93,6 +97,30 @@ def analyze_prompt(payload: PromptPayload):
         parsed_json = json.loads(llm_output)
         
         return {"status": "success", "parsed": parsed_json}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/ask-dong")
+def ask_dong(payload: DongPromptPayload):
+    try:
+        # System instructions injected dynamically with the focused neighborhood
+        system_instructions = f"""You are an intuitive, extremely knowledgeable real estate and neighborhood lifestyle expert. 
+        The user is asking a specific question about the neighborhood [{payload.dong_name}] in Seoul, South Korea.
+        Answer their question concisely and helpfully based on your rich knowledge of this specific area's housing, transportation, demographics, and commercial infrastructure.
+        Output ONLY the specific answer to their question in an engaging, natural Korean tone. Avoid unprompted markdown blocks."""
+        
+        sql_query = f"""
+            SELECT snowflake.cortex.complete(
+                'mistral-large2',
+                $$ {system_instructions} \n\n User Question: {payload.question} $$
+            ) as llm_response
+        """
+        
+        result = session.sql(sql_query).collect()
+        llm_output = result[0]['LLM_RESPONSE']
+        
+        return {"status": "success", "answer": llm_output.strip()}
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -190,6 +218,8 @@ def recommend_apartments(payload: dict):
             FROM {richgo_db}.HACKATHON_2025Q2.REGION_APT_RICHGO_MARKET_PRICE_M_H r
             LEFT JOIN SPH_AGG s ON LEFT(r.BJD_CODE, 8) = s.DONG_CODE
             WHERE r.SD = '서울' 
+              AND r.EMD IS NOT NULL
+              AND r.EMD != ''
               AND r.MEME_PRICE_PER_SUPPLY_PYEONG > 0 
               AND (r.MEME_PRICE_PER_SUPPLY_PYEONG * 10000 * 20) <= {budget_max}
         """
@@ -261,99 +291,127 @@ def recommend_apartments(payload: dict):
                 score += calc_bonus(r_coffee)
                 if r_coffee <= 10:
                     matched_tags.append({"icon": "☕️", "title": f"최상위 카페 상권 (서울 {r_coffee}위 동)", "desc": f"전체 매출이 약 {int(c_coffee/100000000)}억 원에 달하는 지역구 초밀집 핫플레이스입니다."})
-                elif r_coffee <= 35:
+                elif r_coffee <= 150:
                     matched_tags.append({"icon": "☕️", "title": f"우수 카페 상권 (서울 {r_coffee}위 동)", "desc": f"괜찮은 카페 인프라를 보유한 쾌적한 상권입니다."})
+                else:
+                    matched_tags.append({"icon": "✅", "title": "맞춤 인프라 활성화 지역", "desc": "요청하신 라이프스타일에 부합하는 인프라 지점들이 상권 곳곳에 고루 배치되어 있습니다."})
                 
             if req_food:
                 score += calc_bonus(r_food)
                 if r_food <= 10:
                     matched_tags.append({"icon": "🍽", "title": f"거대 외식 핫플레이스 (서울 {r_food}위 동)", "desc": f"대단위 식음료 결제가 일어나는 초거대 외식 상권입니다. (매출 {int(c_food/100000000)}억)"})
-                elif r_food <= 35:
+                elif r_food <= 150:
                     matched_tags.append({"icon": "🍽", "title": f"탄탄한 외식 상권 (서울 {r_food}위 동)", "desc": "선택지가 다양한 식당과 배달 인프라를 갖추었습니다."})
+                else:
+                    matched_tags.append({"icon": "✅", "title": "맞춤 인프라 활성화 지역", "desc": "요청하신 라이프스타일에 부합하는 인프라 지점들이 상권 곳곳에 고루 배치되어 있습니다."})
                     
             if req_leisure:
                 score += calc_bonus(r_leisure)
                 if r_leisure <= 10:
                     matched_tags.append({"icon": "🌳", "title": f"산책/레저 인프라 특구 (서울 {r_leisure}위 동)", "desc": f"대규모 공원이나 문화 인프라가 갖추어져 만족도가 매우 높습니다."})
-                elif r_leisure <= 35:
+                elif r_leisure <= 150:
                     matched_tags.append({"icon": "🌳", "title": f"훌륭한 공원/레저 (서울 {r_leisure}위 동)", "desc": "훌륭한 산책로와 체육 시설 등이 인프라가 쾌적합니다."})
+                else:
+                    matched_tags.append({"icon": "✅", "title": "맞춤 인프라 활성화 지역", "desc": "요청하신 라이프스타일에 부합하는 인프라 지점들이 상권 곳곳에 고루 배치되어 있습니다."})
                     
             if req_edu:
                 score += calc_bonus(r_edu)
                 if r_edu <= 10:
                     matched_tags.append({"icon": "📚", "title": f"프리미엄 최상위 학군 (서울 {r_edu}위 동)", "desc": f"학원 결제 매출이 {int(c_edu/100000000)}억 원에 달하는 압도적 명품 에듀타운입니다."})
-                elif r_edu <= 35:
+                elif r_edu <= 150:
                     matched_tags.append({"icon": "📚", "title": f"탄탄한 교육 환경 (서울 {r_edu}위 동)", "desc": "교육열과 학원 분포 수준이 매우 우수한 지역입니다."})
+                else:
+                    matched_tags.append({"icon": "✅", "title": "맞춤 인프라 활성화 지역", "desc": "요청하신 라이프스타일에 부합하는 인프라 지점들이 상권 곳곳에 고루 배치되어 있습니다."})
                     
             if req_med:
                 score += calc_bonus(r_med)
                 if r_med <= 10:
                     matched_tags.append({"icon": "🏥", "title": f"대형 의료 인프라 밀집 (서울 {r_med}위 동)", "desc": f"대형 병원 및 클리닉 밀집도가 선두급으로 안심할 수 있는 지역입니다."})
-                elif r_med <= 35:
+                elif r_med <= 150:
                     matched_tags.append({"icon": "🏥", "title": f"우수 의료 접근성 (서울 {r_med}위 동)", "desc": "생활형 의료 서비스와 병원 접근성이 쾌적합니다."})
+                else:
+                    matched_tags.append({"icon": "✅", "title": "맞춤 인프라 활성화 지역", "desc": "요청하신 라이프스타일에 부합하는 인프라 지점들이 상권 곳곳에 고루 배치되어 있습니다."})
                     
             if req_shop:
                 score += calc_bonus(r_shop)
                 if r_shop <= 10:
                     matched_tags.append({"icon": "🛍️", "title": f"거대 쇼핑 메카 (서울 {r_shop}위 동)", "desc": f"백화점, 대형 복합 쇼핑몰 등 총 {int(c_shop/100000000)}억대 쇼핑 인프라가 있습니다."})
-                elif r_shop <= 35:
+                elif r_shop <= 150:
                     matched_tags.append({"icon": "🛍️", "title": f"훌륭한 마트/쇼핑 (서울 {r_shop}위 동)", "desc": "장보기와 쇼핑 시설이 인접해 편리한 라이프가 가능합니다."})
+                else:
+                    matched_tags.append({"icon": "✅", "title": "맞춤 인프라 활성화 지역", "desc": "요청하신 라이프스타일에 부합하는 인프라 지점들이 상권 곳곳에 고루 배치되어 있습니다."})
                     
             if req_conv:
                 score += calc_bonus(r_conv)
                 if r_conv <= 10:
                     matched_tags.append({"icon": "🏪", "title": f"하이퍼 슬세권 편의구역 (서울 {r_conv}위 동)", "desc": f"편의점/동네 마트 매출이 초당위권({int(c_conv/100000000)}억)인 밀집 편의 구역입니다."})
-                elif r_conv <= 35:
+                elif r_conv <= 150:
                     matched_tags.append({"icon": "🏪", "title": f"편리하고 모던한 편의권 (서울 {r_conv}위 동)", "desc": "일상 편의 소매점과 마트가 거리에 빼곡하게 들어서 있습니다."})
+                else:
+                    matched_tags.append({"icon": "✅", "title": "맞춤 인프라 활성화 지역", "desc": "요청하신 라이프스타일에 부합하는 인프라 지점들이 상권 곳곳에 고루 배치되어 있습니다."})
                     
             if req_beauty:
                 score += calc_bonus(r_beauty)
                 if r_beauty <= 10:
                     matched_tags.append({"icon": "💅", "title": f"초대형 뷰티/패션 거리 (서울 {r_beauty}위 동)", "desc": f"전체 매출이 약 {int(c_beauty/100000000)}억 원에 달하는 프리미엄 미용/패션 거리입니다."})
-                elif r_beauty <= 35:
+                elif r_beauty <= 150:
                     matched_tags.append({"icon": "💅", "title": f"우수 미용/뷰티 상권 (서울 {r_beauty}위 동)", "desc": "생활 밀착형 뷰티 시설이 수준급으로 구비되어 있습니다."})
+                else:
+                    matched_tags.append({"icon": "✅", "title": "맞춤 인프라 활성화 지역", "desc": "요청하신 라이프스타일에 부합하는 인프라 지점들이 상권 곳곳에 고루 배치되어 있습니다."})
                     
             if req_entertain:
                 score += calc_bonus(r_entertain)
                 if r_entertain <= 10:
                     matched_tags.append({"icon": "🎉", "title": f"초대형 밤문화/유흥 특구 (서울 {r_entertain}위 동)", "desc": f"놀거리와 술자리가 끝없이 이어지는 최고 활성화 구역({int(c_entertain/100000000)}억대)입니다."})
-                elif r_entertain <= 35:
+                elif r_entertain <= 150:
                     matched_tags.append({"icon": "🎉", "title": f"우수 유흥/엔터테인 상권 (서울 {r_entertain}위 동)", "desc": "젊고 활기찬 분위기와 엔터테인먼트 인프라가 탁월합니다."})
+                else:
+                    matched_tags.append({"icon": "✅", "title": "맞춤 인프라 활성화 지역", "desc": "요청하신 라이프스타일에 부합하는 인프라 지점들이 상권 곳곳에 고루 배치되어 있습니다."})
                     
             if req_auto:
                 score += calc_bonus(r_auto)
                 if r_auto <= 10:
                     matched_tags.append({"icon": "🚗", "title": f"오너드라이버 모빌리티 허브 (서울 {r_auto}위 동)", "desc": f"도로교통과 차량 정비/주유 소비가 가장 밀집된 허브급 구역({int(c_auto/100000000)}억)입니다."})
-                elif r_auto <= 35:
+                elif r_auto <= 150:
                     matched_tags.append({"icon": "🚗", "title": f"탄탄한 차량 유지 인프라 (서울 {r_auto}위 동)", "desc": "모빌리티 관련 소비 거점이 매우 가까이에 유지되고 있습니다."})
+                else:
+                    matched_tags.append({"icon": "✅", "title": "맞춤 인프라 활성화 지역", "desc": "요청하신 라이프스타일에 부합하는 인프라 지점들이 상권 곳곳에 고루 배치되어 있습니다."})
                     
             if req_interior:
                 score += calc_bonus(r_interior)
                 if r_interior <= 10:
                     matched_tags.append({"icon": "🛋️", "title": f"리빙/인테리어 핫플레이스 (서울 {r_interior}위 동)", "desc": f"가전/가구 소비가 집중된({int(c_interior/100000000)}억) 프리미엄 리빙 스팟입니다."})
-                elif r_interior <= 35:
+                elif r_interior <= 150:
                     matched_tags.append({"icon": "🛋️", "title": f"우수 인테리어접근성 (서울 {r_interior}위 동)", "desc": "다양한 홈스타일 및 가구 쇼룸 등이 포진해 있습니다."})
+                else:
+                    matched_tags.append({"icon": "✅", "title": "맞춤 인프라 활성화 지역", "desc": "요청하신 라이프스타일에 부합하는 인프라 지점들이 상권 곳곳에 고루 배치되어 있습니다."})
                     
             if req_mz:
                 score += calc_bonus(r_mz)
                 if r_mz <= 10:
                     matched_tags.append({"icon": "🔥", "title": f"2030 영 앤 트렌디 구역 (서울 {r_mz}위 동)", "desc": f"전체 매출 중 2030세대의 결제가 폭발적으로 점유하는 최정상급 인구통계 핫플입니다."})
-                elif r_mz <= 35:
+                elif r_mz <= 150:
                     matched_tags.append({"icon": "🔥", "title": f"활기찬 MZ세대 활동지역 (서울 {r_mz}위 동)", "desc": "청년들의 소비 트렌드가 높게 집중되고 있는 활기찬 동네입니다."})
+                else:
+                    matched_tags.append({"icon": "✅", "title": "맞춤 인프라 활성화 지역", "desc": "요청하신 라이프스타일에 부합하는 인프라 지점들이 상권 곳곳에 고루 배치되어 있습니다."})
                     
             if req_night:
                 score += calc_bonus(r_night)
                 if r_night <= 10:
                     matched_tags.append({"icon": "🌙", "title": f"불야성 심야 활성화 상권 (서울 {r_night}위 동)", "desc": f"21시~03시 심야시간 결제가 끊임없이 발생하는 가장 안전하고 빛나는 권역입니다."})
-                elif r_night <= 35:
+                elif r_night <= 150:
                     matched_tags.append({"icon": "🌙", "title": f"탄탄한 심야/야간 활동구역 (서울 {r_night}위 동)", "desc": "늦은 밤에도 문을 여는 상가와 안전한 유동인구 소비가 확보된 곳입니다."})
+                else:
+                    matched_tags.append({"icon": "✅", "title": "맞춤 인프라 활성화 지역", "desc": "요청하신 라이프스타일에 부합하는 인프라 지점들이 상권 곳곳에 고루 배치되어 있습니다."})
                     
             if req_weekend:
                 score += calc_bonus(r_weekend)
                 if r_weekend <= 10:
                     matched_tags.append({"icon": "🎈", "title": f"주말 유동인구 폭발 구역 (서울 {r_weekend}위 동)", "desc": f"평일 대비 주말에 소비 인파가 정점에 이르는 서울시 톱클래스 휴일 위락 지역입니다."})
-                elif r_weekend <= 35:
+                elif r_weekend <= 150:
                     matched_tags.append({"icon": "🎈", "title": f"우수 주말 핫플레이스 (서울 {r_weekend}위 동)", "desc": "주말만 되면 사람들이 모여드는 활발한 주말 휴식 상권을 지녔습니다."})
+                else:
+                    matched_tags.append({"icon": "✅", "title": "맞춤 인프라 활성화 지역", "desc": "요청하신 라이프스타일에 부합하는 인프라 지점들이 상권 곳곳에 고루 배치되어 있습니다."})
                 
             final_score = int(score)
             if final_score > 99: final_score = 99
@@ -375,14 +433,17 @@ def recommend_apartments(payload: dict):
         # Collect unmapped or extra keywords to show the user we listened!
         extra_keywords = list(set(custom_keywords + payload.get("transportation_preferences", [])))
             
-        # Return top 30 distinct areas for frontend pagination
+        # Return top 50 distinct areas for frontend pagination, merging 'X가' regions
         seen = set()
         unique_recs = []
+        import re
         for rec in recommendations:
-            if rec['region'] not in seen:
-                seen.add(rec['region'])
+            # "서울 영등포구 당산동5가" -> "서울 영등포구 당산동" 
+            base_region = re.sub(r'\d+가$', '', str(rec['region']))
+            if base_region not in seen:
+                seen.add(base_region)
                 unique_recs.append(rec)
-            if len(unique_recs) == 30: break
+            if len(unique_recs) == 50: break
             
         return {
             "status": "success", 
