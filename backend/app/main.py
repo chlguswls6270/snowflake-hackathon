@@ -1,12 +1,14 @@
 import json
+import os
+import re
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from app.database import get_snowflake_session
 
 app = FastAPI(
-    title="SmartHome Matchmaker API",
-    description="Backend API for Real Estate & Rental Recommender",
+    title="Q-Dong (큐동) API",
+    description="AI-powered neighborhood recommendation engine powered by Snowflake Cortex",
     version="1.0.0"
 )
 
@@ -33,6 +35,11 @@ class PromptPayload(BaseModel):
 class DongPromptPayload(BaseModel):
     dong_name: str
     question: str
+
+class RentalInsightPayload(BaseModel):
+    dong_name: str   # e.g. "여의도동"
+    sgg_name: str    # e.g. "영등포구" (parent district, used for AJD lookup)
+    sd_name: str     # e.g. "서울" (province)
 
 @app.get("/")
 def read_root():
@@ -125,7 +132,71 @@ def ask_dong(payload: DongPromptPayload):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-import os
+@app.post("/api/rental-insight")
+def rental_insight(payload: RentalInsightPayload):
+    """Query AJD rental data for a city/district, then use Cortex to generate a
+    natural-language appliance rental recommendation for the specific dong."""
+    try:
+        ajd_db = os.getenv("SNOWFLAKE_DB_AJD")
+
+        # 1. Pull top rental categories for the province from AJD
+        #    V06 has INSTALL_STATE (province) + RENTAL_MAIN_CATEGORY + RENTAL_SUB_CATEGORY
+        rental_sql = f"""
+            SELECT
+                RENTAL_MAIN_CATEGORY,
+                RENTAL_SUB_CATEGORY,
+                SUM(CONTRACT_COUNT) AS TOTAL_CONTRACTS,
+                ROUND(AVG(OPEN_CVR), 1) AS AVG_OPEN_CVR,
+                ROUND(AVG(AVG_NET_SALES) / 12) AS AVG_MONTHLY_FEE
+            FROM "{ajd_db}".TELECOM_INSIGHTS.V06_RENTAL_CATEGORY_TRENDS
+            WHERE INSTALL_STATE = '{payload.sd_name}'
+              AND RENTAL_MAIN_CATEGORY NOT IN ('미분류')
+            GROUP BY RENTAL_MAIN_CATEGORY, RENTAL_SUB_CATEGORY
+            ORDER BY TOTAL_CONTRACTS DESC
+            LIMIT 8
+        """
+        rental_rows = session.sql(rental_sql).collect()
+
+        if not rental_rows:
+            # Fallback – no regional data, run pure Cortex
+            rental_summary = "지역 렌탈 데이터를 찾을 수 없습니다."
+        else:
+            parts = []
+            for r in rental_rows:
+                monthly = int(r['AVG_MONTHLY_FEE']) if r['AVG_MONTHLY_FEE'] else 0
+                parts.append(
+                    f"- {r['RENTAL_MAIN_CATEGORY']} > {r['RENTAL_SUB_CATEGORY']}: "
+                    f"계약 {r['TOTAL_CONTRACTS']}건, 월 평균 {monthly:,}원"
+                )
+            rental_summary = "\n".join(parts)
+
+        # 2. Ask Cortex to synthesize the data into a personalized recommendation
+        system_prompt = f"""당신은 이사 전문 컨설턴트입니다. 사용자가 서울 {payload.sgg_name} {payload.dong_name}으로 이사를 준비하고 있습니다.
+아래는 해당 지역({payload.sd_name})의 실제 아정당(AJD) 렌탈 서비스 계약 데이터입니다:
+
+{rental_summary}
+
+이 데이터를 바탕으로, {payload.dong_name} 이사 준비생에게 어울리는 렌탈 가전 추천을 해주세요.
+다음 형식으로 반드시 출력하세요 (JSON 없이 자연스러운 한국어로):
+1. 해당 동네에서 가장 인기 있는 렌탈 품목 2~3개 추천 (이유 포함)
+2. 월 예상 렌탈 비용 범위
+3. 한 줄 요약 팁
+짧고 실용적으로, 이모지를 적절히 활용해 친근하게 작성해주세요."""
+
+        cortex_sql = f"""
+            SELECT snowflake.cortex.complete(
+                'mistral-large2',
+                $$ {system_prompt} $$
+            ) AS llm_response
+        """
+        result = session.sql(cortex_sql).collect()
+        answer = result[0]['LLM_RESPONSE'].strip()
+
+        return {"status": "success", "insight": answer}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/recommend-apartments")
 def recommend_apartments(payload: dict):
@@ -226,67 +297,59 @@ def recommend_apartments(payload: dict):
         
         result = session.sql(sql_query).collect()
         
+        # Unpack all 14 lifestyle score flags from request
         scores_required = payload.get("scores_required", {})
-        req_cafe = scores_required.get("cafe", False) if isinstance(scores_required, dict) else False
-        req_food = scores_required.get("food", False) if isinstance(scores_required, dict) else False
-        req_leisure = scores_required.get("leisure", False) if isinstance(scores_required, dict) else False
-        req_edu = scores_required.get("education", False) if isinstance(scores_required, dict) else False
-        req_med = scores_required.get("medical", False) if isinstance(scores_required, dict) else False
-        req_shop = scores_required.get("shopping", False) if isinstance(scores_required, dict) else False
-        req_conv = scores_required.get("convenience", False) if isinstance(scores_required, dict) else False
-        req_beauty = scores_required.get("beauty", False) if isinstance(scores_required, dict) else False
-        req_entertain = scores_required.get("entertain", False) if isinstance(scores_required, dict) else False
-        req_auto = scores_required.get("auto", False) if isinstance(scores_required, dict) else False
-        req_interior = scores_required.get("interior", False) if isinstance(scores_required, dict) else False
-        req_mz = scores_required.get("mz_gen", False) if isinstance(scores_required, dict) else False
-        req_night = scores_required.get("night", False) if isinstance(scores_required, dict) else False
-        req_weekend = scores_required.get("weekend", False) if isinstance(scores_required, dict) else False
-        
+        sr = scores_required if isinstance(scores_required, dict) else {}
+        req_cafe     = sr.get("cafe", False)
+        req_food     = sr.get("food", False)
+        req_leisure  = sr.get("leisure", False)
+        req_edu      = sr.get("education", False)
+        req_med      = sr.get("medical", False)
+        req_shop     = sr.get("shopping", False)
+        req_conv     = sr.get("convenience", False)
+        req_beauty   = sr.get("beauty", False)
+        req_entertain = sr.get("entertain", False)
+        req_auto     = sr.get("auto", False)
+        req_interior = sr.get("interior", False)
+        req_mz       = sr.get("mz_gen", False)
+        req_night    = sr.get("night", False)
+        req_weekend  = sr.get("weekend", False)
+
         recommendations = []
-        
-        # Count how many total lifestyle tags the user activated
-        num_req = sum([req_cafe, req_food, req_leisure, req_edu, req_med, req_shop, req_conv, req_beauty, req_entertain, req_auto, req_interior, req_mz, req_night, req_weekend])
-        # Maximum possible bonus is 34 points (65 to 99). Distribute this evenly among activated tags.
+
+        # Count activated lifestyle tags and compute per-tag bonus ceiling
+        # Base score is 65; max total bonus capped at 34 to keep scores 65–99
+        num_req = sum([req_cafe, req_food, req_leisure, req_edu, req_med, req_shop,
+                       req_conv, req_beauty, req_entertain, req_auto, req_interior,
+                       req_mz, req_night, req_weekend])
         max_bonus_per_tag = 34.0 / num_req if num_req > 0 else 0
-        
+
+        # Rank-based decay: rank 1 → 100% bonus, rank 40+ → 0%
+        def calc_bonus(rank):
+            if rank == 999:
+                return 0.0
+            return max_bonus_per_tag * max(0.0, (40.0 - rank) / 39.0)
+
         for r in result:
-            score = 65.0 
+            score = 65.0
             matched_tags = []
-            
-            c_coffee = r['C_COFFEE']
-            r_coffee = r['R_COFFEE']
-            c_food = r['C_FOOD']
-            r_food = r['R_FOOD']
-            c_leisure = r['C_LEISURE']
-            r_leisure = r['R_LEISURE']
-            c_edu = r['C_EDU']
-            r_edu = r['R_EDU']
-            c_med = r['C_MED']
-            r_med = r['R_MED']
-            c_shop = r['C_SHOPPING']
-            r_shop = r['R_SHOPPING']
-            c_conv = r['C_CONVENIENCE']
-            r_conv = r['R_CONVENIENCE']
-            c_beauty = r['C_BEAUTY']
-            r_beauty = r['R_BEAUTY']
-            c_entertain = r['C_ENTERTAIN']
-            r_entertain = r['R_ENTERTAIN']
-            c_auto = r['C_AUTO']
-            r_auto = r['R_AUTO']
-            c_interior = r['C_INTERIOR']
-            r_interior = r['R_INTERIOR']
-            c_mz = r['C_MZ']
-            r_mz = r['R_MZ']
-            c_night = r['C_NIGHT']
-            r_night = r['R_NIGHT']
-            c_weekend = r['C_WEEKEND']
-            r_weekend = r['R_WEEKEND']
-            
-            # Precise mathematical decay based on Rank (1st = 100% bonus, 40th=0%)
-            def calc_bonus(rank):
-                if rank == 999: return 0.0
-                return max_bonus_per_tag * max(0.0, (40.0 - rank) / 39.0)
-            
+
+            # Unpack row values for readability
+            c_coffee, r_coffee    = r['C_COFFEE'],    r['R_COFFEE']
+            c_food,   r_food      = r['C_FOOD'],      r['R_FOOD']
+            c_leisure, r_leisure  = r['C_LEISURE'],   r['R_LEISURE']
+            c_edu,    r_edu       = r['C_EDU'],       r['R_EDU']
+            c_med,    r_med       = r['C_MED'],       r['R_MED']
+            c_shop,   r_shop      = r['C_SHOPPING'],  r['R_SHOPPING']
+            c_conv,   r_conv      = r['C_CONVENIENCE'], r['R_CONVENIENCE']
+            c_beauty, r_beauty    = r['C_BEAUTY'],    r['R_BEAUTY']
+            c_entertain, r_entertain = r['C_ENTERTAIN'], r['R_ENTERTAIN']
+            c_auto,   r_auto      = r['C_AUTO'],      r['R_AUTO']
+            c_interior, r_interior = r['C_INTERIOR'], r['R_INTERIOR']
+            c_mz,     r_mz        = r['C_MZ'],        r['R_MZ']
+            c_night,  r_night     = r['C_NIGHT'],     r['R_NIGHT']
+            c_weekend, r_weekend  = r['C_WEEKEND'],   r['R_WEEKEND']
+
             if req_cafe:
                 score += calc_bonus(r_coffee)
                 if r_coffee <= 10:
@@ -419,26 +482,23 @@ def recommend_apartments(payload: dict):
             recommendations.append({
                 "region": f"{r['SD']} {r['SGG']} {r['EMD']}",
                 "emd": r['EMD'],
-                "price_per_pyeong_krw": int(r['MEME_PRICE_PER_SUPPLY_PYEONG'] * 10000), 
+                "price_per_pyeong_krw": int(r['MEME_PRICE_PER_SUPPLY_PYEONG'] * 10000),
                 "affordable_size_pyeong": round(budget_max / (r['MEME_PRICE_PER_SUPPLY_PYEONG'] * 10000), 1),
                 "total_households": r['TOTAL_HOUSEHOLDS'],
                 "lifestyle_score": final_score,
                 "matched_tags": matched_tags,
-                "sph_raw": { "coffee": c_coffee, "food": c_food, "leisure": c_leisure } # Good for debug
             })
-            
+
         # Re-sort by authentic data-driven score, then budget fit
         recommendations.sort(key=lambda x: (x['lifestyle_score'], x['affordable_size_pyeong']), reverse=True)
             
         # Collect unmapped or extra keywords to show the user we listened!
         extra_keywords = list(set(custom_keywords + payload.get("transportation_preferences", [])))
             
-        # Return top 50 distinct areas for frontend pagination, merging 'X가' regions
+        # De-duplicate '당산동5가' style sub-dongs → treat as the same base dong
         seen = set()
         unique_recs = []
-        import re
         for rec in recommendations:
-            # "서울 영등포구 당산동5가" -> "서울 영등포구 당산동" 
             base_region = re.sub(r'\d+가$', '', str(rec['region']))
             if base_region not in seen:
                 seen.add(base_region)
@@ -453,8 +513,3 @@ def recommend_apartments(payload: dict):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/recommend-rentals")
-def recommend_rentals(payload: dict):
-    # TODO: Query AJD data from Snowflake
-    return {"status": "success", "rentals": []}
