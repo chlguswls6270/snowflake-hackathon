@@ -1,2 +1,22 @@
+# Secrets
 backend/.env
-backend/.venv
+
+# Python virtual environment
+backend/.venv/
+
+# Node modules
+frontend/node_modules/
+
+# Next.js build output
+frontend/.next/
+
+# Logs
+backend/uvicorn.log
+*.log
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
