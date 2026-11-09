@@ -1,20 +1,24 @@
 import json
 import os
 import re
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from app.database import get_snowflake_session
+from pydantic import BaseModel, Field
+from typing import Annotated
+from app.security import BodyLimitMiddleware, require_access
+from app.database import get_snowflake_session, get_db_names
 
 app = FastAPI(
     title="Q-Dong (큐동) API",
     description="AI-powered neighborhood recommendation engine powered by Snowflake Cortex",
-    version="1.0.0"
+    version="1.0.0",
+    dependencies=[Depends(require_access)]
 )
 
+app.add_middleware(BodyLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if origin.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -30,16 +34,23 @@ def startup_event():
     print("Snowflake session initialized on startup.")
 
 class PromptPayload(BaseModel):
-    prompt: str
+    prompt: str = Field(min_length=1, max_length=8000)
 
 class DongPromptPayload(BaseModel):
-    dong_name: str
-    question: str
+    dong_name: str = Field(min_length=1, max_length=100)
+    question: str = Field(min_length=1, max_length=8000)
 
 class RentalInsightPayload(BaseModel):
-    dong_name: str   # e.g. "여의도동"
-    sgg_name: str    # e.g. "영등포구" (parent district, used for AJD lookup)
-    sd_name: str     # e.g. "서울" (province)
+    dong_name: str = Field(min_length=1, max_length=100)
+    sgg_name: str = Field(min_length=1, max_length=100)
+    sd_name: str = Field(min_length=1, max_length=100)
+
+class RecommendationPayload(BaseModel):
+    budget_max: int = Field(default=0, ge=0, le=100_000_000_000_000, strict=True)
+    custom_keywords: list[Annotated[str, Field(max_length=100)]] = Field(default_factory=list, max_length=50)
+    consumption_preferences: list[Annotated[str, Field(max_length=100)]] = Field(default_factory=list, max_length=50)
+    transportation_preferences: list[Annotated[str, Field(max_length=100)]] = Field(default_factory=list, max_length=50)
+    scores_required: dict[str, bool] = Field(default_factory=dict, max_length=14)
 
 @app.get("/")
 def read_root():
@@ -84,17 +95,10 @@ def analyze_prompt(payload: PromptPayload):
 
         You must ONLY output valid JSON. Do not include markdown blocks like ```json or any conversational text."""
 
-        # 3. Formulate the Snowflake Cortex SQL Query 
-        # We use $$ syntax to safely wrap the entire prompt containing single/double quotes.
-        sql_query = f"""
-            SELECT snowflake.cortex.complete(
-                'mistral-large2',
-                $$ {system_instructions} \n\n User Input: {payload.prompt} $$
-            ) as llm_response
-        """
-        
-        # 4. Execute the query on your Snowflake Warehouse
-        result = session.sql(sql_query).collect()
+        sql_query = "SELECT snowflake.cortex.complete('mistral-large2', ?) as llm_response"
+        result = session.sql(
+            sql_query, params=[f"{system_instructions}\n\nUser Input: {payload.prompt}"]
+        ).collect()
         llm_output = result[0]['LLM_RESPONSE']
         
         # 5. Clean up any potential markdown formatting the AI might have stubbornly included
@@ -105,8 +109,8 @@ def analyze_prompt(payload: PromptPayload):
         
         return {"status": "success", "parsed": parsed_json}
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail="요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.") from None
 
 @app.post("/api/ask-dong")
 def ask_dong(payload: DongPromptPayload):
@@ -117,27 +121,23 @@ def ask_dong(payload: DongPromptPayload):
         Answer their question concisely and helpfully based on your rich knowledge of this specific area's housing, transportation, demographics, and commercial infrastructure.
         Output ONLY the specific answer to their question in an engaging, natural Korean tone. Avoid unprompted markdown blocks."""
         
-        sql_query = f"""
-            SELECT snowflake.cortex.complete(
-                'mistral-large2',
-                $$ {system_instructions} \n\n User Question: {payload.question} $$
-            ) as llm_response
-        """
-        
-        result = session.sql(sql_query).collect()
+        sql_query = "SELECT snowflake.cortex.complete('mistral-large2', ?) as llm_response"
+        result = session.sql(
+            sql_query, params=[f"{system_instructions}\n\nUser Question: {payload.question}"]
+        ).collect()
         llm_output = result[0]['LLM_RESPONSE']
         
         return {"status": "success", "answer": llm_output.strip()}
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail="요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.") from None
 
 @app.post("/api/rental-insight")
 def rental_insight(payload: RentalInsightPayload):
     """Query AJD rental data for a city/district, then use Cortex to generate a
     natural-language appliance rental recommendation for the specific dong."""
     try:
-        ajd_db = os.getenv("SNOWFLAKE_DB_AJD")
+        ajd_db = get_db_names()["ajd"]
 
         # 1. Pull top rental categories for the province from AJD
         #    V06 has INSTALL_STATE (province) + RENTAL_MAIN_CATEGORY + RENTAL_SUB_CATEGORY
@@ -148,14 +148,14 @@ def rental_insight(payload: RentalInsightPayload):
                 SUM(CONTRACT_COUNT) AS TOTAL_CONTRACTS,
                 ROUND(AVG(OPEN_CVR), 1) AS AVG_OPEN_CVR,
                 ROUND(AVG(AVG_NET_SALES) / 12) AS AVG_MONTHLY_FEE
-            FROM "{ajd_db}".TELECOM_INSIGHTS.V06_RENTAL_CATEGORY_TRENDS
-            WHERE INSTALL_STATE = '{payload.sd_name}'
+            FROM {ajd_db}.TELECOM_INSIGHTS.V06_RENTAL_CATEGORY_TRENDS
+            WHERE INSTALL_STATE = ?
               AND RENTAL_MAIN_CATEGORY NOT IN ('미분류')
             GROUP BY RENTAL_MAIN_CATEGORY, RENTAL_SUB_CATEGORY
             ORDER BY TOTAL_CONTRACTS DESC
             LIMIT 8
         """
-        rental_rows = session.sql(rental_sql).collect()
+        rental_rows = session.sql(rental_sql, params=[payload.sd_name]).collect()
 
         if not rental_rows:
             # Fallback – no regional data, run pure Cortex
@@ -183,26 +183,23 @@ def rental_insight(payload: RentalInsightPayload):
 3. 한 줄 요약 팁
 짧고 실용적으로, 이모지를 적절히 활용해 친근하게 작성해주세요."""
 
-        cortex_sql = f"""
-            SELECT snowflake.cortex.complete(
-                'mistral-large2',
-                $$ {system_prompt} $$
-            ) AS llm_response
-        """
-        result = session.sql(cortex_sql).collect()
+        cortex_sql = "SELECT snowflake.cortex.complete('mistral-large2', ?) AS llm_response"
+        result = session.sql(cortex_sql, params=[system_prompt]).collect()
         answer = result[0]['LLM_RESPONSE'].strip()
 
         return {"status": "success", "insight": answer}
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail="요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.") from None
 
 
 @app.post("/api/recommend-apartments")
-def recommend_apartments(payload: dict):
+def recommend_apartments(payload: RecommendationPayload):
+    payload = payload.model_dump()
     try:
-        richgo_db = os.getenv("SNOWFLAKE_DB_RICHGO")
-        sph_db = os.getenv("SNOWFLAKE_DB_SPH")
+        db_names = get_db_names()
+        richgo_db = db_names["richgo"]
+        sph_db = db_names["sph"]
         
         budget_max = payload.get("budget_max", 0)
         
@@ -292,10 +289,10 @@ def recommend_apartments(payload: dict):
               AND r.EMD IS NOT NULL
               AND r.EMD != ''
               AND r.MEME_PRICE_PER_SUPPLY_PYEONG > 0 
-              AND (r.MEME_PRICE_PER_SUPPLY_PYEONG * 10000 * 20) <= {budget_max}
+              AND (r.MEME_PRICE_PER_SUPPLY_PYEONG * 10000 * 20) <= ?
         """
         
-        result = session.sql(sql_query).collect()
+        result = session.sql(sql_query, params=[budget_max]).collect()
         
         # Unpack all 14 lifestyle score flags from request
         scores_required = payload.get("scores_required", {})
@@ -511,5 +508,6 @@ def recommend_apartments(payload: dict):
             "special_requests": extra_keywords
         }
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail="요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.") from None
+
