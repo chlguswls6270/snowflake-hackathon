@@ -1,10 +1,11 @@
 "use client";
+import { protectedFetch } from '../lib/protectedFetch';
 
 import { useState, useEffect, useRef } from 'react';
 import MapWrapper from './MapWrapper';
 
 // ── Configuration ────────────────────────────────────────────────────────────
-const API_BASE = 'http://localhost:8001';
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8001';
 
 export default function ChatInput() {
   const [prompt, setPrompt] = useState("");
@@ -71,7 +72,7 @@ export default function ChatInput() {
 
     setRentalInsights(prev => ({ ...prev, [activeDong]: { loading: true, text: null } }));
 
-    fetch(`${API_BASE}/api/rental-insight`, {
+    protectedFetch(`${API_BASE}/api/rental-insight`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ dong_name: activeDong, sgg_name, sd_name })
@@ -118,7 +119,7 @@ export default function ChatInput() {
     }));
 
     try {
-      const res = await fetch(`${API_BASE}/api/ask-dong`, {
+      const res = await protectedFetch(`${API_BASE}/api/ask-dong`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ dong_name: dongName, question: userQuestion })
@@ -162,28 +163,30 @@ export default function ChatInput() {
     setRentalInsights({}); // Clear stale rental insights on each new search
     
     try {
-      const res = await fetch(`${API_BASE}/api/analyze-prompt`, {
+      const res = await protectedFetch(`${API_BASE}/api/analyze-prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt })
       });
       const data = await res.json();
       setResponse(data);
-      
+      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '검색 요청을 처리하지 못했습니다.');
+
       if (data.status === "success") {
-        const recRes = await fetch(`${API_BASE}/api/recommend-apartments`, {
+        const recRes = await protectedFetch(`${API_BASE}/api/recommend-apartments`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(data.parsed)
         });
         const recData = await recRes.json();
+        if (!recRes.ok) throw new Error(typeof recData.detail === 'string' ? recData.detail : '추천 요청을 처리하지 못했습니다.');
         setApartments(recData.recommendations);
         if (recData.special_requests) {
           setSpecialKeywords(recData.special_requests);
         }
       }
     } catch (error) {
-      console.error(error);
+      setResponse({ status: 'error', detail: error instanceof Error ? error.message : '요청을 처리하지 못했습니다.' });
     } finally {
       setLoading(false);
     }
@@ -417,9 +420,13 @@ export default function ChatInput() {
           .hide-scroll::-webkit-scrollbar { display: none; }
           .hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
         `}} />
+        {response?.status === 'error' && (
+          <p role="alert" className="mb-2 rounded-xl bg-white p-3 text-red-700">{response.detail}</p>
+        )}
         <form onSubmit={handleSubmit} className="relative rounded-[28px] overflow-hidden group shadow-[0_8px_40px_rgb(0,0,0,0.08)] bg-white/50 backdrop-blur-3xl border border-white/50 hover:bg-white/60 focus-within:bg-white/80 focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-400/30 transition-all duration-300">
           <textarea
             ref={textareaRef}
+            maxLength={8000}
             className="hide-scroll w-full text-base lg:text-lg bg-transparent focus:outline-none text-slate-800 placeholder-slate-500 font-semibold resize-none flex min-h-[72px] py-[22px] pl-7 pr-[180px] shadow-inner"
             rows={1}
             placeholder="어떤 라이프스타일을 꿈꾸시나요? (예: 아기가 있고, 주말에 산책하기 좋은 동네, 예산 15억)"
@@ -450,3 +457,4 @@ export default function ChatInput() {
     </div>
   );
 }
+

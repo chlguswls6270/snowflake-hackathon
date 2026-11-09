@@ -46,11 +46,10 @@ Snowflake Cortex AI로 사용자의 자연어 조건을 14개 라이프스타일
 ## 🚀 실행 방법
 
 ### 사전 요구사항
-- Python **3.11** (3.12+ 미지원 — snowflake-snowpark-python 호환성)
-- Node.js **18+**
+- Python **3.11** (검증한 실행 환경)
+- Node.js **20.19+**
 
-> ✅ **ZIP 파일로 받으신 경우**: `backend/.env` 파일이 이미 포함되어 있어  
-> Snowflake 계정 설정 없이 바로 실행하실 수 있습니다.
+> 계정 비밀번호나 `.env` 파일은 저장소 및 배포 ZIP에 포함하지 않습니다.
 
 ---
 
@@ -76,11 +75,7 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-> **📦 ZIP 파일로 받으신 경우 (권장)**  
-> `backend/.env` 파일이 이미 포함되어 있습니다.  
-> 아래 서버 실행 명령어로 바로 진행하세요.
-
-> **🔧 직접 Snowflake 계정으로 실행하실 경우**  
+> **🔧 본인 Snowflake 계정 설정**  
 > `backend/.env.example`을 복사하여 `.env`로 저장한 뒤,  
 > 본인의 Snowflake 자격증명과 Marketplace DB 이름을 입력하세요.
 > ```bash
@@ -90,7 +85,7 @@ pip install -r requirements.txt
 
 ```bash
 # 백엔드 서버 실행
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8001
 ```
 
 `Application startup complete.` 메시지가 나오면 성공입니다.
@@ -180,7 +175,7 @@ API 문서: 백엔드 실행 후 `http://localhost:8001/docs` 접속
 
 | 오류 | 해결 방법 |
 |--|--|
-| `Address already in use` | `lsof -ti:8001 \| xargs kill -9` 실행 후 재시작 |
+| `Address already in use` | 기존 서버 터미널에서 Ctrl+C로 종료하거나 다른 포트를 선택 |
 | `Snowflake session error` | `.env` 파일의 계정 정보 및 DB 이름 재확인 |
 | `Map not loading` | 프론트엔드가 `localhost:3000`에서 실행 중인지 확인 |
 | Python 버전 오류 | `python3.11 -m venv .venv` 로 반드시 3.11 사용 |
@@ -188,3 +183,8 @@ API 문서: 백엔드 실행 후 `http://localhost:8001/docs` 접속
 ---
 
 *Snowflake AI & Data Hackathon 2026*
+
+## 보안 설정
+
+`backend/.env`에 32자 이상의 무작위 `DEMO_ACCESS_TOKEN`을 설정하세요. 브라우저에서 분석할 때 접근 코드를 입력합니다. 코드를 비워두면 API가 차단됩니다. 로컬에서만 테스트하려면 `ALLOW_LOCAL_DEMO=true`로 명시하고 서버를 `127.0.0.1`에 바인딩하세요. 배포 시 `ALLOWED_ORIGINS`와 프론트엔드의 공개 URL 설정 `NEXT_PUBLIC_API_BASE_URL`을 지정하세요. 상세 내용은 [SECURITY.md](SECURITY.md)를 참고하세요.
+

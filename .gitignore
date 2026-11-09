@@ -1,22 +1,31 @@
-# Secrets
-backend/.env
+# Credentials and local deployment settings
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+.vercel/
 
-# Python virtual environment
-backend/.venv/
+# Reproducible dependencies and generated output
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.next/
+.vite/
+dist/
+build/
+coverage/
+.test-build/
+*.tsbuildinfo
 
-# Node modules
-frontend/node_modules/
-
-# Next.js build output
-frontend/.next/
-
-# Logs
-backend/uvicorn.log
+# Uploaded user data and local logs
+uploads/
 *.log
-
-# macOS
 .DS_Store
-
-# Editor
 .idea/
 .vscode/
+
